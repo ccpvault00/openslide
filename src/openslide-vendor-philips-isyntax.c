@@ -27,10 +27,37 @@
  *
  * File layout (Philips "iSyntax image format" document, 2020):
  *   XML header | EOT marker "\r\n\x04" | optional seektable | codeblocks
+ * The XML header is a DataObject tree of named attributes: scanner and
+ * DICOM-style metadata, one DataObject per scanned image (WSI, LABELIMAGE,
+ * MACROIMAGE) with the label/macro JPEGs and the ICC profiles as base64
+ * text, and for the WSI the codeblock header table.  The pixel data is a
+ * wavelet pyramid (one scale per level) of 256x256 tiles, each stored as
+ * entropy-coded LL/LH/HL/HH coefficient blocks for three colour channels
+ * (YCoCg); a tile of one level is reconstructed from its own coefficients
+ * plus the LL band produced while decoding its parent, so decoding a tile
+ * needs its ancestors up to the top level.  Levels are padded by a few
+ * pixels per level for the wavelet transform, so the tile grid is larger
+ * than the image and shifted by a per-level origin offset.
  *
- * libisyntax parses the header and decodes the wavelet-compressed tiles.
- * OpenSlide reads the XML header a second time to expose all metadata as
- * properties and to compute quickhash1.
+ * Division of labour:
+ * - libisyntax opens the file by path, parses the header into its own
+ *   structures, reads codeblocks, decodes and caches coefficients, and
+ *   returns reconstructed tiles (opaque BGRA), the base64-decoded JPEG of
+ *   the label and macro images, and the ICC profiles.
+ * - OpenSlide detects the file by its root tag, reads the XML header once
+ *   more through its VFS to publish every attribute as a philips.*
+ *   property (large base64 blobs excluded) and to hash it for quickhash1,
+ *   maps level coordinates onto libisyntax's padded grid, paints tiles
+ *   through the simple grid with its own pixel cache, clips the padding to
+ *   transparent, decodes the associated JPEGs lazily, and sets
+ *   openslide.mpp-x/y and openslide.barcode from libisyntax's parsed
+ *   values.
+ *
+ * Properties: philips.<ATTRIBUTE> for every attribute of the root object
+ * and of the WSI image object; attributes that are arrays of DataObjects
+ * become philips.<ATTRIBUTE>[<i>].<SUBATTRIBUTE>.  openslide.mpp-x/y from
+ * the WSI pixel spacing, openslide.barcode from PIM_DP_UFS_BARCODE (base64
+ * decoded).  openslide.objective-power is not set (see below).
  *
  * Known limitations:
  * - libisyntax opens the file by path and does its own I/O, so the OpenSlide

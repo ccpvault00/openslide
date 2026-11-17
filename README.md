@@ -16,7 +16,7 @@ OpenSlide can read brightfield whole slide images in [several formats][]:
 * [Huron][] (`.tif`)
 * [Leica][] (`.scn`)
 * [MIRAX][] (`.mrxs`)
-* [Philips][] (`.tiff`)
+* [Philips][] (`.tiff`, `.isyntax`)
 * [Sakura][] (`.svslide`)
 * [Trestle][] (`.tif`)
 * [Ventana][] (`.bif`, `.tif`)

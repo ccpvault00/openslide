@@ -1,5 +1,11 @@
 # Notable Changes in OpenSlide
 
+## Unreleased
+
+### Format support
+
+* New format: Philips iSyntax, via libisyntax (optional, `-Disyntax`)
+
 ## Version 4.0.1, 2026-06-07
 
 ### Security
