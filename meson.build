@@ -174,9 +174,22 @@ dicom_dep = dependency(
 )
 isyntax_dep = dependency(
   'libisyntax',
-  # libisyntax has no upstream release with a stable ABI yet; link it in
-  default_options : ['default_library=static', 'tests=false'],
+  required : get_option('isyntax'),
+  # use the wrap even when the feature is auto
+  allow_fallback : true,
+  # libisyntax has no release with a stable ABI yet, so link the wrap in
+  # statically; its warnings are not ours to fix
+  default_options : [
+    'default_library=static',
+    'tests=false',
+    'warning_level=0',
+    'werror=false',
+  ],
 )
+if isyntax_dep.found()
+  conf.set('HAVE_LIBISYNTAX', 1)
+  feature_flags += 'isyntax'
+endif
 
 # Dependency checks
 if jpeg_dep.type_name() != 'internal' and not cc.has_function(

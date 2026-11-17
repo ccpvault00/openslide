@@ -4,6 +4,11 @@ option(
   description : 'Suffix to append to the package version string',
 )
 option(
+  'isyntax',
+  type : 'feature',
+  description : 'Philips iSyntax support (requires libisyntax)',
+)
+option(
   'test',
   type : 'feature',
   yield : true,

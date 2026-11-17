@@ -67,7 +67,6 @@ openslide_sources = files(
   'openslide-vendor-huron.c',
   'openslide-vendor-leica.c',
   'openslide-vendor-mirax.c',
-  'openslide-vendor-philips-isyntax.c',
   'openslide-vendor-philips-tiff.c',
   'openslide-vendor-sakura.c',
   'openslide-vendor-synthetic.c',
@@ -79,6 +78,9 @@ openslide_sources = files(
   openslide_dll_o,
   openslide_tables_c,
 ]
+if isyntax_dep.found()
+  openslide_sources += files('openslide-vendor-philips-isyntax.c')
+endif
 libopenslide = library(
   'openslide',
   openslide_sources,

@@ -44,7 +44,9 @@ static const struct _openslide_format *formats[] = {
   &_openslide_format_mirax,
   &_openslide_format_zeiss,
   &_openslide_format_dicom,
+#ifdef HAVE_LIBISYNTAX
   &_openslide_format_philips_isyntax,
+#endif
   &_openslide_format_hamamatsu_vms_vmu,
   &_openslide_format_hamamatsu_ndpi,
   &_openslide_format_sakura,
