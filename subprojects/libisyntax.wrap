@@ -1,6 +1,6 @@
 [wrap-git]
 url = https://github.com/ccpvault00/libisyntax.git
-revision = a139828982c22487a12e391229d9f0b8c5f66344
+revision = 1489f718b166adb9c3d7460dc47694a23b854408
 depth = 1
 
 [provide]
