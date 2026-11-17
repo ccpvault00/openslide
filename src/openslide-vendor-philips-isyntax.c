@@ -199,7 +199,21 @@ static bool read_tile(openslide_t *osr,
                                         CAIRO_FORMAT_ARGB32,
                                         tw, th, tw * 4);
   cairo_set_source_surface(cr, surface, 0, 0);
+  // Tiles are opaque, so when they land on integer pixel positions OVER
+  // gives the same result as OpenSlide's default SATURATE, and pixman has
+  // a fast path for it (SATURATE costs about 8 ns per pixel).  Fractional
+  // positions need SATURATE to blend the tile seams.
+  cairo_matrix_t m;
+  cairo_get_matrix(cr, &m);
+  bool integral = m.x0 == floor(m.x0) && m.y0 == floor(m.y0);
+  if (integral) {
+    cairo_save(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+  }
   cairo_paint(cr);
+  if (integral) {
+    cairo_restore(cr);
+  }
 
   return true;
 }
