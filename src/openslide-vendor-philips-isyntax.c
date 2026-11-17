@@ -95,11 +95,14 @@ static const char MAIN_IMAGE_XPATH[] =
   "/DataObject[Attribute/@Name='PIM_DP_IMAGE_TYPE' and "
   "Attribute/text()='WSI']";
 
-// libisyntax keeps the wavelet coefficients of this many tiles per slide.
-// openslide_read_region() paints at most 4096x4096 pixels at a time (289
-// tiles of one level plus their ancestors); 500 tiles decode that without
-// thrashing, 300 do not, so keep a 2x margin for interleaved readers.
-#define ISYNTAX_CACHE_TILES 1000
+// libisyntax keeps the wavelet coefficients of this many tiles per slide
+// (about 290 KB each, allocated as tiles are decoded).  A single
+// openslide_read_region() paint (at most 4096x4096 pixels, 289 tiles plus
+// ancestors) needs about 500; a warm handle serving random windows of a
+// mid level of a 150000x90000 slide needs the whole level plus ancestors
+// (about 1000), and 2000 makes that case as fast as pyisyntax, which uses
+// the same number.
+#define ISYNTAX_CACHE_TILES 2000
 
 // libisyntax pads every level of the wavelet pyramid by this many pixels;
 // see libisyntax_read_region() for the same computation
