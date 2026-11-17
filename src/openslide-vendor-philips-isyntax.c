@@ -356,11 +356,16 @@ static char *read_xml_header(const char *filename,
 }
 
 // Drop the text content of attributes holding large base64 blobs, in place.
+// One linear pass per attribute name: spans to keep are copied forward
+// through a write pointer, so a crafted header with many blob attributes
+// cannot make this quadratic.
 static void strip_blob_attributes(char *xml) {
   for (const char * const *name = BLOB_ATTRIBUTES; *name; name++) {
     g_autofree char *pattern = g_strdup_printf("Name=\"%s\"", *name);
-    char *cur = xml;
-    while ((cur = strstr(cur, pattern))) {
+    char *read = xml;
+    char *write = xml;
+    char *cur;
+    while ((cur = strstr(read, pattern))) {
       char *content = strchr(cur, '>');
       if (!content) {
         break;
@@ -370,9 +375,12 @@ static void strip_blob_attributes(char *xml) {
       if (!end) {
         break;
       }
-      memmove(content, end, strlen(end) + 1);
-      cur = content;
+      size_t keep = content - read;
+      memmove(write, read, keep);
+      write += keep;
+      read = end;
     }
+    memmove(write, read, strlen(read) + 1);
   }
 }
 
@@ -492,7 +500,8 @@ static uint32_t parse_objective_power(const char *derivation) {
     if (g_str_equal(kv[0], "levels") && kv[1]) {
       g_auto(GStrv) levels = g_strsplit(kv[1], ",", 0);
       uint64_t first_level;
-      if (_openslide_parse_uint64(levels[0], &first_level, 10) &&
+      if (levels[0] &&
+          _openslide_parse_uint64(levels[0], &first_level, 10) &&
           first_level && first_level <= 200) {
         return first_level;
       }
