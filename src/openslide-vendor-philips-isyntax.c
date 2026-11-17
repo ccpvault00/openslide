@@ -37,6 +37,17 @@
  *   VFS (_openslide_file) is only used for the XML header and the hash.
  * - libisyntax serialises tile decoding of one slide behind a mutex, so
  *   concurrent openslide_read_region() calls on one handle do not scale.
+ * - libisyntax reports every failure as LIBISYNTAX_FATAL, so I/O errors
+ *   (short reads of a truncated file) and decode errors are both mapped to
+ *   OPENSLIDE_ERROR_FAILED, and it prints a line to stderr for each missing
+ *   codeblock; it has no logging hook to silence that.
+ * - Each handle keeps a libisyntax coefficient cache of ISYNTAX_CACHE_TILES
+ *   tiles (about 290 KB each once decoded) in addition to OpenSlide's own
+ *   pixel cache; the two are not interchangeable, since neighbouring and
+ *   child tiles are decoded from the cached coefficients.
+ * - openslide.objective-power is not set: the derivation description of
+ *   iSyntax files carries no magnification, and OpenSlide does not derive
+ *   it from the pixel spacing in other formats either.
  * - Pixel byte order on big-endian hosts is left to libisyntax.
  */
 
@@ -84,8 +95,11 @@ static const char MAIN_IMAGE_XPATH[] =
   "/DataObject[Attribute/@Name='PIM_DP_IMAGE_TYPE' and "
   "Attribute/text()='WSI']";
 
-// libisyntax keeps the wavelet coefficients of this many tiles per slide
-#define ISYNTAX_CACHE_TILES 2000
+// libisyntax keeps the wavelet coefficients of this many tiles per slide.
+// openslide_read_region() paints at most 4096x4096 pixels at a time (289
+// tiles of one level plus their ancestors); 500 tiles decode that without
+// thrashing, 300 do not, so keep a 2x margin for interleaved readers.
+#define ISYNTAX_CACHE_TILES 1000
 
 // libisyntax pads every level of the wavelet pyramid by this many pixels;
 // see libisyntax_read_region() for the same computation
@@ -99,6 +113,19 @@ struct philips_isyntax_ops_data {
 // buffers returned by libisyntax come from the C allocator, not GLib's
 static void libisyntax_free(void *buf) {
   free(buf);  // ci-allow
+}
+
+static const char *libisyntax_strerror(isyntax_error_t ret) {
+  switch (ret) {
+  case LIBISYNTAX_OK:
+    return "no error";
+  case LIBISYNTAX_FATAL:
+    return "fatal error";
+  case LIBISYNTAX_INVALID_ARGUMENT:
+    return "invalid argument";
+  default:
+    return "unknown error";
+  }
 }
 
 struct level {
@@ -191,9 +218,9 @@ static bool read_tile(openslide_t *osr,
                                                LIBISYNTAX_PIXEL_FORMAT_BGRA);
     if (ret != LIBISYNTAX_OK) {
       g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                  "libisyntax_tile_read failed on scale %d, tile (%"PRId64
-                  ", %"PRId64"): error %d",
-                  l->scale, tile_col, tile_row, ret);
+                  "Couldn't read tile (%"PRId64", %"PRId64") of scale %d: "
+                  "libisyntax %s (%d)",
+                  tile_col, tile_row, l->scale, libisyntax_strerror(ret), ret);
       return false;
     }
 
@@ -598,7 +625,8 @@ static bool read_associated_jpeg(isyntax_t *isyntax,
   }
   if (ret != LIBISYNTAX_OK) {
     g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't read associated image: libisyntax error %d", ret);
+                "Couldn't read associated image: libisyntax %s (%d)",
+                libisyntax_strerror(ret), ret);
     return false;
   }
   return true;
@@ -707,7 +735,8 @@ static bool philips_isyntax_open(openslide_t *osr,
                                         &data->isyntax);
   if (ret != LIBISYNTAX_OK) {
     g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "libisyntax couldn't open the slide: error %d", ret);
+                "libisyntax couldn't open the slide: %s (%d)",
+                libisyntax_strerror(ret), ret);
     return false;
   }
 
@@ -717,13 +746,15 @@ static bool philips_isyntax_open(openslide_t *osr,
                                 &data->cache);
   if (ret != LIBISYNTAX_OK) {
     g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't create libisyntax cache: error %d", ret);
+                "Couldn't create libisyntax cache: %s (%d)",
+                libisyntax_strerror(ret), ret);
     return false;
   }
   ret = libisyntax_cache_inject(data->cache, data->isyntax);
   if (ret != LIBISYNTAX_OK) {
     g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't attach libisyntax cache: error %d", ret);
+                "Couldn't attach libisyntax cache: %s (%d)",
+                libisyntax_strerror(ret), ret);
     return false;
   }
 
