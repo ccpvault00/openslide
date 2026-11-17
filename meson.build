@@ -172,6 +172,11 @@ dicom_dep = dependency(
   default_options : ['tests=false'],
   version : '>=1.3.0',
 )
+isyntax_dep = dependency(
+  'libisyntax',
+  # libisyntax has no upstream release with a stable ABI yet; link it in
+  default_options : ['default_library=static', 'tests=false'],
+)
 
 # Dependency checks
 if jpeg_dep.type_name() != 'internal' and not cc.has_function(

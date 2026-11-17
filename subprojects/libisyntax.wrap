@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/ccpvault00/libisyntax.git
+revision = ab139f79d1091036208b9bb07c9c86c977b0a4ba
+depth = 1
+
+[provide]
+dependency_names = libisyntax
