@@ -64,10 +64,10 @@
  *   VFS (_openslide_file) is only used for the XML header and the hash.
  * - libisyntax serialises tile decoding of one slide behind a mutex, so
  *   concurrent openslide_read_region() calls on one handle do not scale.
- * - libisyntax reports every failure as LIBISYNTAX_FATAL, so I/O errors
- *   (short reads of a truncated file) and decode errors are both mapped to
- *   OPENSLIDE_ERROR_FAILED, and it prints a line to stderr for each missing
- *   codeblock; it has no logging hook to silence that.
+ * - libisyntax distinguishes I/O errors (mapped to G_FILE_ERROR, like
+ *   OpenSlide's own short reads) from undecodable data
+ *   (OPENSLIDE_ERROR_FAILED) but does not say which codeblock failed; its
+ *   error-level log message is appended to the GError instead.
  * - Each handle keeps a libisyntax coefficient cache of ISYNTAX_CACHE_TILES
  *   tiles (about 290 KB each once decoded) in addition to OpenSlide's own
  *   pixel cache; the two are not interchangeable, since neighbouring and
@@ -84,6 +84,7 @@
 
 #include <glib.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -153,9 +154,75 @@ static const char *libisyntax_strerror(isyntax_error_t ret) {
     return "fatal error";
   case LIBISYNTAX_INVALID_ARGUMENT:
     return "invalid argument";
+  case LIBISYNTAX_IO_ERROR:
+    return "I/O error";
   default:
     return "unknown error";
   }
+}
+
+// libisyntax decodes on the calling thread, so the last error-level
+// message it logged on this thread belongs to the call that is failing.
+static GPrivate last_error = G_PRIVATE_INIT(g_free);
+
+static void libisyntax_log(enum libisyntax_log_level_t level,
+                           const char *message,
+                           void *userdata G_GNUC_UNUSED) {
+  switch (level) {
+  case LIBISYNTAX_LOG_ERROR:
+    g_private_replace(&last_error, g_strchomp(g_strdup(message)));
+    break;
+  case LIBISYNTAX_LOG_WARNING:
+    if (_openslide_debug(OPENSLIDE_DEBUG_DECODING)) {
+      g_autofree char *msg = g_strchomp(g_strdup(message));
+      g_warning("libisyntax warning: %s", msg);
+    }
+    break;
+  default:
+    if (_openslide_debug(OPENSLIDE_DEBUG_DECODING)) {
+      g_autofree char *msg = g_strchomp(g_strdup(message));
+      g_debug("libisyntax: %s", msg);
+    }
+    break;
+  }
+}
+
+// Short reads of a truncated file get the same domain as OpenSlide's own
+// file errors; everything else is a format or decode error.
+static void set_libisyntax_error(GError **err, isyntax_error_t ret,
+                                 const char *fmt, ...) G_GNUC_PRINTF(3, 4);
+static void set_libisyntax_error(GError **err, isyntax_error_t ret,
+                                 const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  g_autofree char *msg = g_strdup_vprintf(fmt, ap);
+  va_end(ap);
+  g_autofree char *detail = g_strdup(g_private_get(&last_error));
+  g_private_replace(&last_error, NULL);
+  GQuark domain = ret == LIBISYNTAX_IO_ERROR ? G_FILE_ERROR : OPENSLIDE_ERROR;
+  int code = ret == LIBISYNTAX_IO_ERROR ?
+    (int) G_FILE_ERROR_IO : (int) OPENSLIDE_ERROR_FAILED;
+  g_set_error(err, domain, code, "%s: libisyntax %s (%d)%s%s",
+              msg, libisyntax_strerror(ret), ret,
+              detail ? ": " : "", detail ? detail : "");
+}
+
+// libisyntax_init() is idempotent; the log callback is process-wide.
+static bool init_libisyntax(GError **err) {
+  static gsize state = 0;
+  if (g_once_init_enter(&state)) {
+    isyntax_error_t ret = libisyntax_init();
+    if (ret == LIBISYNTAX_OK) {
+      libisyntax_set_log_callback(libisyntax_log, NULL);
+    }
+    g_once_init_leave(&state, ret == LIBISYNTAX_OK ? 1 : 2);
+  }
+  if (state != 1) {
+    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
+                "Couldn't initialize libisyntax");
+    return false;
+  }
+  return true;
 }
 
 struct level {
@@ -247,10 +314,10 @@ static bool read_tile(openslide_t *osr,
                                                buf,
                                                LIBISYNTAX_PIXEL_FORMAT_BGRA);
     if (ret != LIBISYNTAX_OK) {
-      g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                  "Couldn't read tile (%"PRId64", %"PRId64") of scale %d: "
-                  "libisyntax %s (%d)",
-                  tile_col, tile_row, l->scale, libisyntax_strerror(ret), ret);
+      set_libisyntax_error(err, ret,
+                           "Couldn't read tile (%"PRId64", %"PRId64
+                           ") of scale %d",
+                           tile_col, tile_row, l->scale);
       return false;
     }
 
@@ -326,8 +393,7 @@ static bool read_icc_profile_common(isyntax_t *isyntax,
                                                     (isyntax_image_t *) image,
                                                     &profile, &size);
   if (ret != LIBISYNTAX_OK) {
-    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "No ICC profile");
+    set_libisyntax_error(err, ret, "No ICC profile");
     return false;
   }
   bool ok = true;
@@ -654,9 +720,7 @@ static bool read_associated_jpeg(isyntax_t *isyntax,
     g_assert_not_reached();
   }
   if (ret != LIBISYNTAX_OK) {
-    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't read associated image: libisyntax %s (%d)",
-                libisyntax_strerror(ret), ret);
+    set_libisyntax_error(err, ret, "Couldn't read associated image");
     return false;
   }
   return true;
@@ -751,22 +815,18 @@ static bool philips_isyntax_open(openslide_t *osr,
     return false;
   }
 
-  // open with libisyntax.  init is idempotent and starts the library's
-  // worker thread pool on first use.
+  // open with libisyntax; init starts the library's worker thread pool on
+  // first use
   g_autoptr(philips_isyntax_ops_data) data =
     g_new0(struct philips_isyntax_ops_data, 1);
-  if (libisyntax_init() != LIBISYNTAX_OK) {
-    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't initialize libisyntax");
+  if (!init_libisyntax(err)) {
     return false;
   }
   isyntax_error_t ret = libisyntax_open(filename,
                                         (enum libisyntax_open_flags_t) 0,
                                         &data->isyntax);
   if (ret != LIBISYNTAX_OK) {
-    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "libisyntax couldn't open the slide: %s (%d)",
-                libisyntax_strerror(ret), ret);
+    set_libisyntax_error(err, ret, "libisyntax couldn't open the slide");
     return false;
   }
 
@@ -775,16 +835,12 @@ static bool philips_isyntax_open(openslide_t *osr,
   ret = libisyntax_cache_create("openslide", ISYNTAX_CACHE_TILES,
                                 &data->cache);
   if (ret != LIBISYNTAX_OK) {
-    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't create libisyntax cache: %s (%d)",
-                libisyntax_strerror(ret), ret);
+    set_libisyntax_error(err, ret, "Couldn't create libisyntax cache");
     return false;
   }
   ret = libisyntax_cache_inject(data->cache, data->isyntax);
   if (ret != LIBISYNTAX_OK) {
-    g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
-                "Couldn't attach libisyntax cache: %s (%d)",
-                libisyntax_strerror(ret), ret);
+    set_libisyntax_error(err, ret, "Couldn't attach libisyntax cache");
     return false;
   }
 
