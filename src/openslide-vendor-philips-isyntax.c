@@ -164,6 +164,18 @@ static bool read_tile(openslide_t *osr,
   int64_t tw = l->base.tile_w;
   int64_t th = l->base.tile_h;
 
+  // The grid covers libisyntax's padded tile grid; only the part inside
+  // the image is painted, the rest stays transparent like in other
+  // formats.  Bounds of the image within this tile, in tile pixels:
+  int64_t x0 = MAX(0, l->origin_offset - tile_col * tw);
+  int64_t y0 = MAX(0, l->origin_offset - tile_row * th);
+  int64_t x1 = MIN(tw, l->origin_offset + l->base.w - tile_col * tw);
+  int64_t y1 = MIN(th, l->origin_offset + l->base.h - tile_row * th);
+  if (x0 >= x1 || y0 >= y1) {
+    // entirely outside the image
+    return true;
+  }
+
   // cache
   g_autoptr(_openslide_cache_entry) cache_entry = NULL;
   uint32_t *tiledata = _openslide_cache_get(osr->cache,
@@ -171,8 +183,7 @@ static bool read_tile(openslide_t *osr,
                                             &cache_entry);
   if (!tiledata) {
     // libisyntax writes opaque BGRA, which is CAIRO_FORMAT_ARGB32 on
-    // little-endian hosts.  Tiles outside the grid or without data are
-    // returned as white.
+    // little-endian hosts.  Tiles without data are returned as white.
     g_autofree uint32_t *buf = g_new(uint32_t, tw * th);
     isyntax_error_t ret = libisyntax_tile_read(data->isyntax, data->cache,
                                                l->scale, tile_col, tile_row,
@@ -184,6 +195,19 @@ static bool read_tile(openslide_t *osr,
                   ", %"PRId64"): error %d",
                   l->scale, tile_col, tile_row, ret);
       return false;
+    }
+
+    // clear the padding outside the image
+    if (x0 > 0 || y0 > 0 || x1 < tw || y1 < th) {
+      for (int64_t y = 0; y < th; y++) {
+        uint32_t *row = buf + y * tw;
+        if (y < y0 || y >= y1) {
+          memset(row, 0, tw * sizeof(*row));
+        } else {
+          memset(row, 0, x0 * sizeof(*row));
+          memset(row + x1, 0, (tw - x1) * sizeof(*row));
+        }
+      }
     }
 
     // put it in the cache
